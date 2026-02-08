@@ -121,7 +121,6 @@ impl ClaudeCode {
             "--verbose",
             "--output-format=stream-json",
             "--input-format=stream-json",
-            "--include-partial-messages",
             "--replay-user-messages",
             "--disallowedTools=AskUserQuestion",
         ]);
