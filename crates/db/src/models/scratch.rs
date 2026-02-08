@@ -49,6 +49,80 @@ pub struct WorkspacePanelStateData {
     pub is_left_main_panel_visible: bool,
 }
 
+/// Star-State-Bus next action payload (director-controlled)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StarbusNextAction {
+    pub actor: String,
+    pub role: String,
+    pub action: String,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+}
+
+/// Star-State-Bus decision request
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StarbusDecisionRequest {
+    pub id: String,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub recommended: Option<String>,
+    #[serde(default)]
+    pub context_refs: Vec<String>,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<String>,
+}
+
+/// Star-State-Bus history entry (lightweight)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StarbusHistoryEntry {
+    pub ts: String,
+    #[serde(default)]
+    pub from_status: Option<String>,
+    #[serde(default)]
+    pub to_status: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Star-State-Bus task state (stored in scratch)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StarbusTaskStateData {
+    pub task_id: Uuid,
+    pub title: String,
+    pub status: String,
+    #[serde(default)]
+    pub active_actor: Option<String>,
+    #[serde(default)]
+    pub active_role: Option<String>,
+    #[serde(default)]
+    pub next_action: Option<StarbusNextAction>,
+    #[serde(default)]
+    pub decision_requests: Vec<StarbusDecisionRequest>,
+    #[serde(default)]
+    pub history: Vec<StarbusHistoryEntry>,
+    #[serde(default)]
+    pub step_count: i32,
+    #[serde(default)]
+    pub gate: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Star-State-Bus global state (stored in scratch)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StarbusGlobalStateData {
+    #[serde(default)]
+    pub active_task_id: Option<Uuid>,
+}
+
 /// Data for UI preferences scratch (global preferences stored per-user or per-device)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct UiPreferencesData {
@@ -152,6 +226,8 @@ pub enum ScratchPayload {
     PreviewSettings(PreviewSettingsData),
     WorkspaceNotes(WorkspaceNotesData),
     UiPreferences(UiPreferencesData),
+    StarbusGlobalState(StarbusGlobalStateData),
+    StarbusTaskState(StarbusTaskStateData),
 }
 
 impl ScratchPayload {

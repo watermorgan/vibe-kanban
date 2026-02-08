@@ -24,6 +24,7 @@ pub mod repo;
 pub mod scratch;
 pub mod search;
 pub mod sessions;
+pub mod starbus;
 pub mod tags;
 pub mod task_attempts;
 pub mod tasks;
@@ -47,6 +48,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(events::router(&deployment))
         .merge(approvals::router())
         .merge(scratch::router(&deployment))
+        .merge(starbus::router(&deployment))
         .merge(search::router(&deployment))
         .merge(migration::router())
         .merge(sessions::router(&deployment))

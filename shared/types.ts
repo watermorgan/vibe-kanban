@@ -116,9 +116,19 @@ is_terminal_visible: boolean | null,
  */
 workspace_panel_states: { [key in string]?: WorkspacePanelStateData }, };
 
-export type ScratchPayload = { "type": "DRAFT_TASK", "data": string } | { "type": "DRAFT_FOLLOW_UP", "data": DraftFollowUpData } | { "type": "DRAFT_WORKSPACE", "data": DraftWorkspaceData } | { "type": "DRAFT_ISSUE", "data": DraftIssueData } | { "type": "PREVIEW_SETTINGS", "data": PreviewSettingsData } | { "type": "WORKSPACE_NOTES", "data": WorkspaceNotesData } | { "type": "UI_PREFERENCES", "data": UiPreferencesData };
+export type StarbusNextAction = { actor: string, role: string, action: string, inputs: Array<string>, outputs: Array<string>, };
 
-export enum ScratchType { DRAFT_TASK = "DRAFT_TASK", DRAFT_FOLLOW_UP = "DRAFT_FOLLOW_UP", DRAFT_WORKSPACE = "DRAFT_WORKSPACE", DRAFT_ISSUE = "DRAFT_ISSUE", PREVIEW_SETTINGS = "PREVIEW_SETTINGS", WORKSPACE_NOTES = "WORKSPACE_NOTES", UI_PREFERENCES = "UI_PREFERENCES" }
+export type StarbusDecisionRequest = { id: string, question: string, options: Array<string>, recommended: string | null, context_refs: Array<string>, resolved_at: string | null, resolution: string | null, };
+
+export type StarbusHistoryEntry = { ts: string, from_status: string | null, to_status: string | null, actor: string | null, note: string | null, };
+
+export type StarbusTaskStateData = { task_id: string, title: string, status: string, active_actor: string | null, active_role: string | null, next_action: StarbusNextAction | null, decision_requests: Array<StarbusDecisionRequest>, history: Array<StarbusHistoryEntry>, step_count: number, gate: string | null, tags: Array<string>, };
+
+export type StarbusGlobalStateData = { active_task_id: string | null, };
+
+export type ScratchPayload = { "type": "DRAFT_TASK", "data": string } | { "type": "DRAFT_FOLLOW_UP", "data": DraftFollowUpData } | { "type": "DRAFT_WORKSPACE", "data": DraftWorkspaceData } | { "type": "DRAFT_ISSUE", "data": DraftIssueData } | { "type": "PREVIEW_SETTINGS", "data": PreviewSettingsData } | { "type": "WORKSPACE_NOTES", "data": WorkspaceNotesData } | { "type": "UI_PREFERENCES", "data": UiPreferencesData } | { "type": "STARBUS_GLOBAL_STATE", "data": StarbusGlobalStateData } | { "type": "STARBUS_TASK_STATE", "data": StarbusTaskStateData };
+
+export enum ScratchType { DRAFT_TASK = "DRAFT_TASK", DRAFT_FOLLOW_UP = "DRAFT_FOLLOW_UP", DRAFT_WORKSPACE = "DRAFT_WORKSPACE", DRAFT_ISSUE = "DRAFT_ISSUE", PREVIEW_SETTINGS = "PREVIEW_SETTINGS", WORKSPACE_NOTES = "WORKSPACE_NOTES", UI_PREFERENCES = "UI_PREFERENCES", STARBUS_GLOBAL_STATE = "STARBUS_GLOBAL_STATE", STARBUS_TASK_STATE = "STARBUS_TASK_STATE" }
 
 export type Scratch = { id: string, payload: ScratchPayload, created_at: string, updated_at: string, };
 
@@ -291,6 +301,18 @@ export type RenameBranchRequest = { new_branch_name: string, };
 export type RenameBranchResponse = { branch: string, };
 
 export type StartReviewRequest = { executor_profile_id: ExecutorProfileId, additional_prompt: string | null, use_all_workspace_commits: boolean, };
+
+export type StarbusStateResponse = { active_task_id: string | null, tasks: Array<StarbusTaskStateData>, };
+
+export type StarbusIntakeRequest = { project_id: string, title: string, description: string | null, acceptance: string | null, priority: string | null, domain_roles: Array<string>, include_recommended_deps: boolean | null, tags: Array<string>, set_active: boolean, default_actor: string | null, default_role: string | null, };
+
+export type StarbusPreflightResponse = { ok: boolean, errors: Array<string>, warnings: Array<string>, };
+
+export type StarbusNextActionUpdate = { task_id: string, status: string | null, note: string | null, next_action: StarbusNextAction | null, set_active: boolean | null, };
+
+export type StarbusDecisionResolveRequest = { task_id: string, decision_id: string, resolution: string, resolved_at: string | null, resume_status: string | null, next_action: StarbusNextAction | null, };
+
+export type StarbusTransitionRequest = { task_id: string, status: string, note: string | null, next_action: StarbusNextAction | null, set_active: boolean | null, };
 
 export type ReviewError = { "type": "process_already_running" };
 
