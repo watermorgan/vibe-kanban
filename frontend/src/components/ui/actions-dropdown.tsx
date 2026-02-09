@@ -19,6 +19,7 @@ import { GitActionsDialog } from '@/components/dialogs/tasks/GitActionsDialog';
 import { EditBranchNameDialog } from '@/components/dialogs/tasks/EditBranchNameDialog';
 import { useProject } from '@/contexts/ProjectContext';
 import { openTaskForm } from '@/lib/openTaskForm';
+import { starbusApi } from '@/lib/api';
 
 import { useNavigate } from 'react-router-dom';
 import { WorkspaceWithSession } from '@/types/attempt';
@@ -36,6 +37,11 @@ export function ActionsDropdown({ task, attempt }: ActionsDropdownProps) {
 
   const hasAttemptActions = Boolean(attempt);
   const hasTaskActions = Boolean(task);
+  const isStarbusTask =
+    Boolean(task?.title) &&
+    (task!.title.includes('V2-I1') ||
+      task!.title.includes('TASK-010') ||
+      task!.title.toUpperCase().includes('STARBUS'));
 
   const handleEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,6 +134,59 @@ export function ActionsDropdown({ task, attempt }: ActionsDropdownProps) {
     });
   };
 
+  const handleStarbusDispatch = async (
+    e: React.MouseEvent,
+    hitlSelectActor: boolean
+  ) => {
+    e.stopPropagation();
+    if (!task?.id) return;
+
+    try {
+      const response = await starbusApi.dispatchTask({
+        task_id: task.id,
+        hitl_select_actor: hitlSelectActor,
+        actor: hitlSelectActor ? undefined : 'ACTOR_CLAUDE',
+        actor_options: hitlSelectActor
+          ? ['ACTOR_CLAUDE', 'ACTOR_CODEX', 'ACTOR_CURSOR', 'ACTOR_OPENCODE']
+          : undefined,
+        auto_start: true,
+        set_active: true,
+      });
+
+      const ws = response.workspace_id ? `\nworkspace: ${response.workspace_id}` : '';
+      window.alert(`StarBus dispatch done.\nstatus: ${response.status}${ws}\n${response.note}`);
+      window.location.reload();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`StarBus dispatch failed: ${message}`);
+    }
+  };
+
+  const handleStarbusSync = async (
+    e: React.MouseEvent,
+    pruneNonMatchingScratch: boolean
+  ) => {
+    e.stopPropagation();
+    if (!projectId) return;
+
+    try {
+      const response = await starbusApi.syncProjectStatuses({
+        project_id: projectId,
+        title_prefixes: ['V2-I1', 'TASK-010'],
+        dry_run: false,
+        prune_nonmatching_scratch: pruneNonMatchingScratch,
+        set_active_to_latest: true,
+      });
+      window.alert(
+        `StarBus sync done.\nupdated statuses: ${response.updated_task_ids.length}\npruned scratch: ${response.pruned_scratch_ids.length}\nactive: ${response.active_task_id ?? 'none'}`
+      );
+      window.location.reload();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      window.alert(`StarBus sync failed: ${message}`);
+    }
+  };
+
   return (
     <>
       <DropdownMenu>
@@ -192,6 +251,35 @@ export function ActionsDropdown({ task, attempt }: ActionsDropdownProps) {
           {hasTaskActions && (
             <>
               <DropdownMenuLabel>{t('actionsMenu.task')}</DropdownMenuLabel>
+              {isStarbusTask && (
+                <>
+                  <DropdownMenuItem
+                    disabled={!task?.id}
+                    onClick={(e) => handleStarbusDispatch(e, false)}
+                  >
+                    StarBus: Dispatch Claude (auto-start)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!task?.id}
+                    onClick={(e) => handleStarbusDispatch(e, true)}
+                  >
+                    StarBus: Dispatch with HITL actor select
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!projectId}
+                    onClick={(e) => handleStarbusSync(e, false)}
+                  >
+                    StarBus: Sync project statuses (V2-I1/TASK-010)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!projectId}
+                    onClick={(e) => handleStarbusSync(e, true)}
+                  >
+                    StarBus: Sync + prune nonmatching scratch
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
               <DropdownMenuItem disabled={!projectId} onClick={handleEdit}>
                 {t('common:buttons.edit')}
               </DropdownMenuItem>

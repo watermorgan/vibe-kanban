@@ -116,6 +116,128 @@ export class ApiError<E = unknown> extends Error {
   }
 }
 
+export interface StarbusCreateProjectRepo {
+  display_name: string;
+  git_repo_path: string;
+}
+
+export interface StarbusProjectSeed {
+  name: string;
+  repositories: StarbusCreateProjectRepo[];
+}
+
+export interface StarbusRunRoleTaskRequest {
+  project_id?: string;
+  project_seed?: StarbusProjectSeed;
+  title: string;
+  description?: string;
+  acceptance?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  domain_roles?: string[];
+  include_recommended_deps?: boolean;
+  tags?: string[];
+  actor?: string;
+  role: string;
+  action?: string;
+  set_active?: boolean;
+  executor_profile_id?: ExecutorProfileId;
+  target_branches?: Record<string, string>;
+}
+
+export interface StarbusRunRoleTaskResponse {
+  project_id: string;
+  task_id: string;
+  workspace_id?: string;
+  status: string;
+  started: boolean;
+  actor: string;
+  role: string;
+  note?: string;
+}
+
+export interface StarbusWorkspaceRunInfo {
+  workspace_id: string;
+  branch: string;
+  container_ref?: string;
+  latest_execution_process_id?: string;
+  latest_session_id?: string;
+  latest_status?: string;
+  latest_completed_at?: string;
+  is_running: boolean;
+}
+
+export interface StarbusRunsResponse {
+  task_id: string;
+  workspace_count: number;
+  workspaces: StarbusWorkspaceRunInfo[];
+}
+
+export interface StarbusHandoffRequest {
+  task_id: string;
+  summary: string;
+  results?: string[];
+  next_steps?: string[];
+  status?: string;
+}
+
+export interface StarbusHandoffResponse {
+  task_id: string;
+  handoff_path: string;
+  status: string;
+}
+
+export interface StarbusDispatchRequest {
+  task_id: string;
+  actor?: string;
+  actor_options?: string[];
+  hitl_select_actor?: boolean;
+  set_active?: boolean;
+  auto_start?: boolean;
+  role_override?: string;
+  action_override?: string;
+}
+
+export interface StarbusDispatchResponse {
+  task_id: string;
+  actor: string;
+  role: string;
+  status: string;
+  gate: string;
+  prompt_path: string;
+  workspace_id?: string;
+  started: boolean;
+  note?: string;
+}
+
+export interface StarbusStateQuery {
+  project_id?: string;
+  title_prefix?: string;
+  active_only?: boolean;
+}
+
+export interface StarbusProjectStatusSyncRequest {
+  project_id: string;
+  title_prefixes?: string[];
+  dry_run?: boolean;
+  prune_nonmatching_scratch?: boolean;
+  set_active_to_latest?: boolean;
+}
+
+export interface StarbusProjectStatusSyncResponse {
+  project_id: string;
+  dry_run: boolean;
+  matched_task_ids: string[];
+  updated_task_ids: string[];
+  pruned_scratch_ids: string[];
+  active_task_id?: string;
+}
+
+export interface StarbusStatusMappingResponse {
+  starbus_to_task: Record<string, string>;
+  allowed_blocked_resume_targets: string[];
+  canonical_statuses: string[];
+}
+
 const makeRequest = async (url: string, options: RequestInit = {}) => {
   const headers = new Headers(options.headers ?? {});
   if (!headers.has('Content-Type')) {
@@ -979,6 +1101,101 @@ export const configApi = {
       `/api/agents/check-availability?executor=${encodeURIComponent(agent)}`
     );
     return handleApiResponse<AvailabilityInfo>(response);
+  },
+};
+
+export const starbusApi = {
+  getState: async (query?: StarbusStateQuery): Promise<unknown> => {
+    const params = new URLSearchParams();
+    if (query?.project_id) params.set('project_id', query.project_id);
+    if (query?.title_prefix) params.set('title_prefix', query.title_prefix);
+    if (query?.active_only !== undefined) {
+      params.set('active_only', String(query.active_only));
+    }
+    const url = params.toString()
+      ? `/api/starbus/state?${params.toString()}`
+      : '/api/starbus/state';
+    const response = await makeRequest(url);
+    return handleApiResponse<unknown>(response);
+  },
+  getStatusMapping: async (): Promise<StarbusStatusMappingResponse> => {
+    const response = await makeRequest('/api/starbus/status-mapping');
+    return handleApiResponse<StarbusStatusMappingResponse>(response);
+  },
+  syncProjectStatuses: async (
+    payload: StarbusProjectStatusSyncRequest
+  ): Promise<StarbusProjectStatusSyncResponse> => {
+    const response = await makeRequest('/api/starbus/state/sync/project-statuses', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<StarbusProjectStatusSyncResponse>(response);
+  },
+  intakePreflight: async (payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await makeRequest('/api/starbus/intake/preflight', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<unknown>(response);
+  },
+  intakeCreate: async (payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await makeRequest('/api/starbus/intake/create', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<unknown>(response);
+  },
+  runRoleTask: async (
+    payload: StarbusRunRoleTaskRequest
+  ): Promise<StarbusRunRoleTaskResponse> => {
+    const response = await makeRequest('/api/starbus/run-role-task', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<StarbusRunRoleTaskResponse>(response);
+  },
+  getRuns: async (taskId: string): Promise<StarbusRunsResponse> => {
+    const response = await makeRequest(`/api/starbus/runs/${taskId}`);
+    return handleApiResponse<StarbusRunsResponse>(response);
+  },
+  handoff: async (
+    payload: StarbusHandoffRequest
+  ): Promise<StarbusHandoffResponse> => {
+    const response = await makeRequest('/api/starbus/handoff', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<StarbusHandoffResponse>(response);
+  },
+  dispatchTask: async (
+    payload: StarbusDispatchRequest
+  ): Promise<StarbusDispatchResponse> => {
+    const response = await makeRequest('/api/starbus/dispatch', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<StarbusDispatchResponse>(response);
+  },
+  updateNextAction: async (payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await makeRequest('/api/starbus/state/next_action', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<unknown>(response);
+  },
+  transition: async (payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await makeRequest('/api/starbus/state/transition', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<unknown>(response);
+  },
+  resolveDecision: async (payload: Record<string, unknown>): Promise<unknown> => {
+    const response = await makeRequest('/api/starbus/state/decision/resolve', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return handleApiResponse<unknown>(response);
   },
 };
 
