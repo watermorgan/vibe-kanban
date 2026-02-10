@@ -34,10 +34,10 @@ fi
 if [ "$CHECK_MODE" = "--check" ]; then
   if [ -n "$BILLING_DIR" ]; then
     echo "➤ Checking SQLx data for billing (offline mode)..."
-    (cd "$BILLING_DIR" && SQLX_OFFLINE=true cargo sqlx prepare --check)
+    (cd "$BILLING_DIR" && SQLX_OFFLINE=true cargo sqlx prepare --check --profile sqlx-prepare)
   fi
   echo "➤ Checking SQLx data (offline mode)..."
-  SQLX_OFFLINE=true cargo sqlx prepare --check
+  SQLX_OFFLINE=true cargo sqlx prepare --check --profile sqlx-prepare
   echo "✅ sqlx check complete"
   exit 0
 fi
@@ -68,11 +68,11 @@ sqlx migrate run
 
 if [ -n "$BILLING_DIR" ]; then
   echo "➤ Preparing SQLx data for billing..."
-  (cd "$BILLING_DIR" && cargo sqlx prepare)
+  (cd "$BILLING_DIR" && cargo sqlx prepare --profile sqlx-prepare)
 fi
 
 echo "➤ Preparing SQLx data..."
-cargo sqlx prepare
+cargo sqlx prepare --profile sqlx-prepare
 
 echo "➤ Stopping Postgres..."
 pg_ctl -D "$DATA_DIR" -m fast -w stop > /dev/null

@@ -23,3 +23,13 @@ rustflags = ["-C", "link-arg=/DEBUG:FASTLINK"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/DEBUG:FASTLINK"]
+
+# Profile optimized for sqlx prepare - faster compilation, less optimization
+# Use with: cargo sqlx prepare --profile sqlx-prepare
+[profile.sqlx-prepare]
+inherits = "dev"
+codegen-units = 256
+incremental = false
+opt-level = 0
+[profile.sqlx-prepare.package."*"]
+opt-level = 0
