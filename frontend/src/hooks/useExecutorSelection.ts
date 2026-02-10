@@ -1,19 +1,22 @@
-import { useState, useMemo, useCallback } from 'react';
-import type { BaseCodingAgent, ExecutorConfig } from 'shared/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  BaseCodingAgent,
+  ExecutorConfig,
+  ExecutorProfileId,
+} from 'shared/types';
 import { getVariantOptions } from '@/utils/executor';
 import { useVariant } from './useVariant';
-
-interface ExecutorProfileId {
-  executor: BaseCodingAgent;
-  variant: string | null;
-}
 
 interface UseExecutorSelectionOptions {
   profiles: Record<string, ExecutorConfig> | null;
   latestProfileId: ExecutorProfileId | null;
-  scratchVariant: string | null | undefined;
+  scratchProfileId: ExecutorProfileId | null | undefined;
   /** User's saved executor preference from config */
   configExecutorProfile?: ExecutorProfileId | null;
+  /** Whether the user can override the executor via UI */
+  allowUserSelection?: boolean;
+  /** Optional key to reset local selection when switching context */
+  scopeKey?: string;
 }
 
 interface UseExecutorSelectionResult {
@@ -33,32 +36,45 @@ interface UseExecutorSelectionResult {
 
 /**
  * Hook to manage executor and variant selection with priority:
- * - Executor: user selection > latest from processes > config preference > first available
+ * - Executor: (optional) user selection > scratch > latest from processes > config > first available
  * - Variant: user selection > scratch > process
  */
 export function useExecutorSelection({
   profiles,
   latestProfileId,
-  scratchVariant,
+  scratchProfileId,
   configExecutorProfile,
+  allowUserSelection = true,
+  scopeKey,
 }: UseExecutorSelectionOptions): UseExecutorSelectionResult {
   const [selectedExecutor, setSelectedExecutor] =
     useState<BaseCodingAgent | null>(null);
+  const lastScopeKeyRef = useRef<string | undefined>(scopeKey);
 
   const executorOptions = useMemo(
     () => Object.keys(profiles ?? {}) as BaseCodingAgent[],
     [profiles]
   );
 
+  useEffect(() => {
+    const scopeChanged = lastScopeKeyRef.current !== scopeKey;
+    if (!scopeChanged) return;
+    lastScopeKeyRef.current = scopeKey;
+    setSelectedExecutor(null);
+  }, [scopeKey]);
+
   const effectiveExecutor = useMemo(
     () =>
-      selectedExecutor ??
+      (allowUserSelection ? selectedExecutor : null) ??
+      scratchProfileId?.executor ??
       latestProfileId?.executor ??
       configExecutorProfile?.executor ??
       executorOptions[0] ??
       null,
     [
       selectedExecutor,
+      allowUserSelection,
+      scratchProfileId?.executor,
       latestProfileId?.executor,
       configExecutorProfile?.executor,
       executorOptions,
@@ -72,7 +88,8 @@ export function useExecutorSelection({
 
   const { selectedVariant, setSelectedVariant } = useVariant({
     processVariant: latestProfileId?.variant ?? null,
-    scratchVariant,
+    scratchVariant: scratchProfileId?.variant,
+    scopeKey,
   });
 
   const handleExecutorChange = useCallback(
