@@ -261,16 +261,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (fromLastSession) return fromLastSession;
 
     // Fallback: just executor from session metadata, no variant
-    const lastSessionExecutor = sessions?.[0]?.executor;
-    if (lastSessionExecutor) {
+    const fallbackExecutor = session?.executor ?? sessions?.[0]?.executor;
+    if (fallbackExecutor) {
       return {
-        executor: lastSessionExecutor as BaseCodingAgent,
+        executor: fallbackExecutor as BaseCodingAgent,
         variant: null,
       };
     }
 
     return null;
-  }, [processes, lastSessionProcesses, sessions]);
+  }, [processes, lastSessionProcesses, session?.executor, sessions]);
 
   const needsExecutorSelection =
     isNewSessionMode || (!session?.executor && !latestProfileId?.executor);
@@ -340,8 +340,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   } = useExecutorSelection({
     profiles,
     latestProfileId,
-    scratchVariant: scratchData?.executor_profile_id?.variant,
+    scratchProfileId: scratchData?.executor_profile_id,
     configExecutorProfile: config?.executor_profile,
+    allowUserSelection: needsExecutorSelection,
+    scopeKey: scratchId,
   });
 
   // Wrap variant change to also save to scratch

@@ -166,6 +166,7 @@ export function TaskFollowUpSection({
     useVariant({
       processVariant: latestProfileId?.variant ?? null,
       scratchVariant: scratchData?.executor_profile_id?.variant,
+      scopeKey: sessionId,
     });
 
   // Ref to track current variant for use in message save callback

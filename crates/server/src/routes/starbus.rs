@@ -10,6 +10,7 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
     project::{CreateProject, Project},
@@ -40,6 +41,25 @@ fn starbus_global_id() -> Uuid {
 
 fn normalize_status(status: &str) -> String {
     status.trim().to_uppercase()
+}
+
+fn is_terminal_status(status: &str) -> bool {
+    matches!(
+        normalize_status(status).as_str(),
+        "DONE" | "FAILED" | "CANCELLED"
+    )
+}
+
+fn status_priority(status: &str) -> u8 {
+    match normalize_status(status).as_str() {
+        "EXECUTING" => 0,
+        "VERIFYING" => 1,
+        "AUDITING" => 2,
+        "DESIGNING" => 3,
+        "QUEUED" => 4,
+        "BLOCKED_HUMAN" => 5,
+        _ => 6,
+    }
 }
 
 fn map_starbus_to_task_status(status: &str) -> TaskStatus {
@@ -704,14 +724,18 @@ async fn upsert_global_state(
     Ok(())
 }
 
-async fn list_starbus_tasks(
+async fn list_starbus_tasks_with_meta(
     deployment: &DeploymentImpl,
-) -> Result<Vec<StarbusTaskStateData>, ApiError> {
+) -> Result<Vec<StarbusTaskWithMeta>, ApiError> {
     let all = Scratch::find_all(&deployment.db().pool).await?;
     let tasks = all
         .into_iter()
         .filter_map(|scratch| match scratch.payload {
-            ScratchPayload::StarbusTaskState(data) => Some(data),
+            ScratchPayload::StarbusTaskState(data) => Some(StarbusTaskWithMeta {
+                state: data,
+                created_at: scratch.created_at,
+                updated_at: scratch.updated_at,
+            }),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -747,7 +771,9 @@ pub async fn get_starbus_state(
 
     let mut project_task_ids: Option<HashSet<Uuid>> = None;
     if let Some(project_id) = query.project_id {
-        let project_tasks = Task::find_by_project_id(&deployment.db().pool, project_id).await?;
+        let project_tasks =
+            Task::find_by_project_id_with_attempt_status(&deployment.db().pool, project_id)
+                .await?;
         project_task_ids = Some(project_tasks.into_iter().map(|t| t.id).collect());
     }
 
@@ -777,7 +803,7 @@ pub async fn get_starbus_state(
     });
 
     Ok(ResponseJson(ApiResponse::success(StarbusStateResponse {
-        active_task_id: global.active_task_id,
+        active_task_id: resolved_active_task_id,
         tasks,
     })))
 }
@@ -821,8 +847,11 @@ pub async fn sync_project_statuses(
     Json(req): Json<StarbusProjectStatusSyncRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusProjectStatusSyncResponse>>, ApiError> {
     let dry_run = req.dry_run.unwrap_or(false);
-    let project_tasks = Task::find_by_project_id(&deployment.db().pool, req.project_id).await?;
-    let project_task_map: HashMap<Uuid, Task> = project_tasks.into_iter().map(|t| (t.id, t)).collect();
+    let project_tasks =
+        Task::find_by_project_id_with_attempt_status(&deployment.db().pool, req.project_id)
+            .await?;
+    let project_task_map: HashMap<Uuid, Task> =
+        project_tasks.into_iter().map(|t| (t.id, t.task)).collect();
     if project_task_map.is_empty() {
         return Err(ApiError::BadRequest(format!(
             "No tasks found for project {}",
@@ -914,12 +943,26 @@ pub async fn sync_project_statuses(
 }
 
 pub async fn intake_preflight(
-    State(_deployment): State<DeploymentImpl>,
+    State(deployment): State<DeploymentImpl>,
     Json(payload): Json<StarbusIntakeRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusPreflightResponse>>, ApiError> {
-    Ok(ResponseJson(ApiResponse::success(validate_intake(
-        &payload,
-    ))))
+    let mut response = validate_intake(&payload);
+
+    // Check for duplicate task title in the same project
+    if let Ok(existing) =
+        Task::find_by_project_and_title(&deployment.db().pool, payload.project_id, &payload.title)
+            .await
+    {
+        if existing.is_some() {
+            response.errors.push(format!(
+                "A task with title '{}' already exists in this project",
+                payload.title
+            ));
+            response.ok = false;
+        }
+    }
+
+    Ok(ResponseJson(ApiResponse::success(response)))
 }
 
 pub async fn intake_create(
@@ -931,6 +974,17 @@ pub async fn intake_create(
         return Err(ApiError::BadRequest(format!(
             "Preflight failed: {}",
             preflight.errors.join("; ")
+        )));
+    }
+
+    // Check for duplicate task title in the same project
+    if let Ok(Some(existing_task)) =
+        Task::find_by_project_and_title(&deployment.db().pool, payload.project_id, &payload.title)
+            .await
+    {
+        return Err(ApiError::BadRequest(format!(
+            "A task with title '{}' already exists in this project (task_id: {})",
+            payload.title, existing_task.id
         )));
     }
 
@@ -1037,11 +1091,20 @@ pub async fn intake_create(
         )));
     }
 
-    if payload.set_active {
+    let global = get_global_state(&deployment).await?;
+    let desired_active_task_id = if payload.set_active {
+        Some(task_id)
+    } else {
+        global.active_task_id
+    };
+    let tasks_with_meta = list_starbus_tasks_with_meta(&deployment).await?;
+    let resolved_active_task_id =
+        select_active_task_id(desired_active_task_id, &tasks_with_meta);
+    if resolved_active_task_id != global.active_task_id {
         upsert_global_state(
             &deployment,
             StarbusGlobalStateData {
-                active_task_id: Some(task_id),
+                active_task_id: resolved_active_task_id,
             },
         )
         .await?;
@@ -1064,15 +1127,6 @@ pub async fn update_next_action(
     if let Some(next_action) = update.next_action {
         state.next_action = Some(next_action);
     }
-    if update.set_active.unwrap_or(false) {
-        upsert_global_state(
-            &deployment,
-            StarbusGlobalStateData {
-                active_task_id: Some(state.task_id),
-            },
-        )
-        .await?;
-    }
 
     let update_payload = UpdateScratch {
         payload: ScratchPayload::StarbusTaskState(state.clone()),
@@ -1084,6 +1138,25 @@ pub async fn update_next_action(
         &update_payload,
     )
     .await?;
+
+    let global = get_global_state(&deployment).await?;
+    let desired_active_task_id = if update.set_active.unwrap_or(false) {
+        Some(state.task_id)
+    } else {
+        global.active_task_id
+    };
+    let tasks_with_meta = list_starbus_tasks_with_meta(&deployment).await?;
+    let resolved_active_task_id =
+        select_active_task_id(desired_active_task_id, &tasks_with_meta);
+    if resolved_active_task_id != global.active_task_id {
+        upsert_global_state(
+            &deployment,
+            StarbusGlobalStateData {
+                active_task_id: resolved_active_task_id,
+            },
+        )
+        .await?;
+    }
 
     Ok(ResponseJson(ApiResponse::success(state)))
 }
@@ -1137,11 +1210,20 @@ pub async fn transition_state(
     )
     .await?;
 
-    if update.set_active.unwrap_or(false) {
+    let global = get_global_state(&deployment).await?;
+    let desired_active_task_id = if update.set_active.unwrap_or(false) {
+        Some(state.task_id)
+    } else {
+        global.active_task_id
+    };
+    let tasks_with_meta = list_starbus_tasks_with_meta(&deployment).await?;
+    let resolved_active_task_id =
+        select_active_task_id(desired_active_task_id, &tasks_with_meta);
+    if resolved_active_task_id != global.active_task_id {
         upsert_global_state(
             &deployment,
             StarbusGlobalStateData {
-                active_task_id: Some(state.task_id),
+                active_task_id: resolved_active_task_id,
             },
         )
         .await?;
@@ -1308,6 +1390,20 @@ pub async fn resolve_decision(
     )
     .await?;
 
+    let global = get_global_state(&deployment).await?;
+    let tasks_with_meta = list_starbus_tasks_with_meta(&deployment).await?;
+    let resolved_active_task_id =
+        select_active_task_id(global.active_task_id, &tasks_with_meta);
+    if resolved_active_task_id != global.active_task_id {
+        upsert_global_state(
+            &deployment,
+            StarbusGlobalStateData {
+                active_task_id: resolved_active_task_id,
+            },
+        )
+        .await?;
+    }
+
     Ok(ResponseJson(ApiResponse::success(state)))
 }
 
@@ -1374,6 +1470,16 @@ pub async fn run_role_task(
         return Err(ApiError::BadRequest(format!(
             "Preflight failed: {}",
             preflight.errors.join("; ")
+        )));
+    }
+
+    // Check for duplicate task title in the same project
+    if let Ok(Some(existing_task)) =
+        Task::find_by_project_and_title(&deployment.db().pool, project.id, &payload.title).await
+    {
+        return Err(ApiError::BadRequest(format!(
+            "A task with title '{}' already exists in this project (task_id: {})",
+            payload.title, existing_task.id
         )));
     }
 
@@ -2051,4 +2157,88 @@ pub fn router(_deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/starbus/state/next_action", post(update_next_action))
         .route("/starbus/state/transition", post(transition_state))
         .route("/starbus/state/decision/resolve", post(resolve_decision))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn mk(
+        task_id: Uuid,
+        status: &str,
+        created_at_s: i64,
+        updated_at_s: i64,
+    ) -> StarbusTaskWithMeta {
+        StarbusTaskWithMeta {
+            state: StarbusTaskStateData {
+                task_id,
+                title: "t".to_string(),
+                status: status.to_string(),
+                active_actor: None,
+                active_role: None,
+                next_action: None,
+                decision_requests: Vec::new(),
+                history: Vec::new(),
+                step_count: 0,
+                gate: None,
+                tags: Vec::new(),
+            },
+            created_at: Utc.timestamp_opt(created_at_s, 0).unwrap(),
+            updated_at: Utc.timestamp_opt(updated_at_s, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn keeps_desired_active_when_present_and_non_terminal() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let tasks = vec![
+            mk(a, "EXECUTING", 10, 10),
+            mk(b, "QUEUED", 11, 11),
+        ];
+        assert_eq!(select_active_task_id(Some(a), &tasks), Some(a));
+    }
+
+    #[test]
+    fn heals_missing_active_to_best_candidate() {
+        let missing = Uuid::from_u128(1);
+        let queued = Uuid::from_u128(2);
+        let executing = Uuid::from_u128(3);
+        let tasks = vec![mk(queued, "QUEUED", 10, 10), mk(executing, "EXECUTING", 9, 9)];
+        assert_eq!(select_active_task_id(Some(missing), &tasks), Some(executing));
+    }
+
+    #[test]
+    fn heals_terminal_active_to_best_candidate() {
+        let done = Uuid::from_u128(1);
+        let designing = Uuid::from_u128(2);
+        let tasks = vec![mk(done, "DONE", 10, 10), mk(designing, "DESIGNING", 9, 9)];
+        assert_eq!(select_active_task_id(Some(done), &tasks), Some(designing));
+    }
+
+    #[test]
+    fn chooses_priority_then_most_recent_update() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let tasks = vec![
+            mk(a, "VERIFYING", 10, 100),
+            mk(b, "EXECUTING", 11, 1),
+        ];
+        assert_eq!(select_active_task_id(None, &tasks), Some(b));
+
+        let tasks = vec![
+            mk(a, "EXECUTING", 10, 1),
+            mk(b, "EXECUTING", 11, 2),
+        ];
+        assert_eq!(select_active_task_id(None, &tasks), Some(b));
+    }
+
+    #[test]
+    fn returns_none_when_all_tasks_terminal() {
+        let a = Uuid::from_u128(1);
+        let b = Uuid::from_u128(2);
+        let tasks = vec![mk(a, "DONE", 1, 1), mk(b, "FAILED", 2, 2)];
+        assert_eq!(select_active_task_id(None, &tasks), None);
+    }
 }

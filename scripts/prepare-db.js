@@ -30,12 +30,24 @@ try {
     env: { ...process.env, DATABASE_URL: databaseUrl }
   });
 
-  // Prepare queries
-  const sqlxCommand = checkMode ? 'cargo sqlx prepare --check' : 'cargo sqlx prepare';
+  // Prepare queries with workspace-specific optimizations
+  const sqlxBaseCommand = checkMode
+    ? 'cargo sqlx prepare --check --profile sqlx-prepare'
+    : 'cargo sqlx prepare --profile sqlx-prepare';
+
+  // Use optimized build settings for sqlx prepare
+  // SQLX_OFFLINE=false ensures we actually prepare (not just check cache)
   console.log(checkMode ? 'Checking prepared queries...' : 'Preparing queries...');
-  execSync(sqlxCommand, {
+
+  const prepareEnv = {
+    ...process.env,
+    DATABASE_URL: databaseUrl,
+    SQLX_OFFLINE: 'false',
+  };
+
+  execSync(sqlxBaseCommand, {
     stdio: 'inherit',
-    env: { ...process.env, DATABASE_URL: databaseUrl }
+    env: prepareEnv
   });
 
   console.log(checkMode ? 'SQLx check complete!' : 'Database preparation complete!');
