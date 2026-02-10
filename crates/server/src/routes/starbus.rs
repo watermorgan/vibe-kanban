@@ -914,12 +914,26 @@ pub async fn sync_project_statuses(
 }
 
 pub async fn intake_preflight(
-    State(_deployment): State<DeploymentImpl>,
+    State(deployment): State<DeploymentImpl>,
     Json(payload): Json<StarbusIntakeRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusPreflightResponse>>, ApiError> {
-    Ok(ResponseJson(ApiResponse::success(validate_intake(
-        &payload,
-    ))))
+    let mut response = validate_intake(&payload);
+
+    // Check for duplicate task title in the same project
+    if let Ok(existing) =
+        Task::find_by_project_and_title(&deployment.db().pool, payload.project_id, &payload.title)
+            .await
+    {
+        if existing.is_some() {
+            response.errors.push(format!(
+                "A task with title '{}' already exists in this project",
+                payload.title
+            ));
+            response.ok = false;
+        }
+    }
+
+    Ok(ResponseJson(ApiResponse::success(response)))
 }
 
 pub async fn intake_create(
@@ -931,6 +945,17 @@ pub async fn intake_create(
         return Err(ApiError::BadRequest(format!(
             "Preflight failed: {}",
             preflight.errors.join("; ")
+        )));
+    }
+
+    // Check for duplicate task title in the same project
+    if let Ok(Some(existing_task)) =
+        Task::find_by_project_and_title(&deployment.db().pool, payload.project_id, &payload.title)
+            .await
+    {
+        return Err(ApiError::BadRequest(format!(
+            "A task with title '{}' already exists in this project (task_id: {})",
+            payload.title, existing_task.id
         )));
     }
 
@@ -1374,6 +1399,16 @@ pub async fn run_role_task(
         return Err(ApiError::BadRequest(format!(
             "Preflight failed: {}",
             preflight.errors.join("; ")
+        )));
+    }
+
+    // Check for duplicate task title in the same project
+    if let Ok(Some(existing_task)) =
+        Task::find_by_project_and_title(&deployment.db().pool, project.id, &payload.title).await
+    {
+        return Err(ApiError::BadRequest(format!(
+            "A task with title '{}' already exists in this project (task_id: {})",
+            payload.title, existing_task.id
         )));
     }
 
