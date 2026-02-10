@@ -122,7 +122,7 @@ export type StarbusDecisionRequest = { id: string, question: string, options: Ar
 
 export type StarbusHistoryEntry = { ts: string, from_status: string | null, to_status: string | null, actor: string | null, note: string | null, };
 
-export type StarbusTaskStateData = { task_id: string, title: string, status: string, active_actor: string | null, active_role: string | null, next_action: StarbusNextAction | null, decision_requests: Array<StarbusDecisionRequest>, history: Array<StarbusHistoryEntry>, step_count: number, gate: string | null, tags: Array<string>, };
+export type StarbusTaskStateData = { task_id: string, title: string, status: string, priority: string | null, active_actor: string | null, active_role: string | null, next_action: StarbusNextAction | null, decision_requests: Array<StarbusDecisionRequest>, history: Array<StarbusHistoryEntry>, step_count: number, gate: string | null, tags: Array<string>, domain_roles: Array<string>, include_recommended_deps: boolean | null, };
 
 export type StarbusGlobalStateData = { active_task_id: string | null, };
 
@@ -306,13 +306,13 @@ export type StarbusStateResponse = { active_task_id: string | null, tasks: Array
 
 export type StarbusIntakeRequest = { project_id: string, title: string, description: string | null, acceptance: string | null, priority: string | null, domain_roles: Array<string>, include_recommended_deps: boolean | null, tags: Array<string>, set_active: boolean, default_actor: string | null, default_role: string | null, };
 
-export type StarbusPreflightResponse = { ok: boolean, errors: Array<string>, warnings: Array<string>, };
+export type StarbusPreflightResponse = { ok: boolean, errors: Array<string>, warnings: Array<string>, blocked_human_reasons: Array<string>, };
 
 export type StarbusNextActionUpdate = { task_id: string, status: string | null, note: string | null, next_action: StarbusNextAction | null, set_active: boolean | null, };
 
 export type StarbusDecisionResolveRequest = { task_id: string, decision_id: string, resolution: string, resolved_at: string | null, resume_status: string | null, next_action: StarbusNextAction | null, };
 
-export type StarbusTransitionRequest = { task_id: string, status: string, note: string | null, next_action: StarbusNextAction | null, set_active: boolean | null, };
+export type StarbusTransitionRequest = { task_id: string, status: string, note: string | null, next_action: StarbusNextAction | null, set_active: boolean | null, gate: string | null, };
 
 export type ReviewError = { "type": "process_already_running" };
 
