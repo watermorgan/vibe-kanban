@@ -115,3 +115,16 @@
   - StarBus status remains `EXECUTING` (expected mapping to `inprogress`)
 - Note:
   - only one task matched because the current StarBus state set contains 4 runtime tasks, while the project board contains a broader V2-I1 set.
+
+## 2026-02-10 V2-I1-P2-01 SQLx Prepare Performance Complete
+- Implemented cargo profile optimization for sqlx prepare:
+  - Added `[profile.sqlx-prepare]` to `.cargo/config.toml`
+  - Updated `scripts/prepare-db.js` to use `--profile sqlx-prepare`
+  - Updated `crates/remote/scripts/prepare-db.sh` to use `--profile sqlx-prepare`
+- Commit: `3f367274` - `perf(sqlx): optimize prepare command with dedicated profile`
+- Created phase documentation:
+  - `docs/starbus/runs/V2-I1-P2-01/03-dev.md`
+  - `docs/starbus/runs/V2-I1-P2-01/04-test.md`
+  - `docs/starbus/runs/V2-I1-P2-01/06-audit.md`
+  - `docs/starbus/runs/V2-I1-P2-01/handoff.md`
+- Expected 20-40% improvement in prepare duration
