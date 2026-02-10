@@ -771,7 +771,9 @@ pub async fn get_starbus_state(
 
     let mut project_task_ids: Option<HashSet<Uuid>> = None;
     if let Some(project_id) = query.project_id {
-        let project_tasks = Task::find_by_project_id(&deployment.db().pool, project_id).await?;
+        let project_tasks =
+            Task::find_by_project_id_with_attempt_status(&deployment.db().pool, project_id)
+                .await?;
         project_task_ids = Some(project_tasks.into_iter().map(|t| t.id).collect());
     }
 
@@ -845,8 +847,11 @@ pub async fn sync_project_statuses(
     Json(req): Json<StarbusProjectStatusSyncRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusProjectStatusSyncResponse>>, ApiError> {
     let dry_run = req.dry_run.unwrap_or(false);
-    let project_tasks = Task::find_by_project_id(&deployment.db().pool, req.project_id).await?;
-    let project_task_map: HashMap<Uuid, Task> = project_tasks.into_iter().map(|t| (t.id, t)).collect();
+    let project_tasks =
+        Task::find_by_project_id_with_attempt_status(&deployment.db().pool, req.project_id)
+            .await?;
+    let project_task_map: HashMap<Uuid, Task> =
+        project_tasks.into_iter().map(|t| (t.id, t.task)).collect();
     if project_task_map.is_empty() {
         return Err(ApiError::BadRequest(format!(
             "No tasks found for project {}",
