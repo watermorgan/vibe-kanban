@@ -159,6 +159,32 @@ impl Workspace {
         Ok(workspaces)
     }
 
+    pub async fn fetch_all_by_project_id(
+        pool: &SqlitePool,
+        project_id: Uuid,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as!(
+            Workspace,
+            r#"SELECT w.id AS "id!: Uuid",
+                      w.task_id AS "task_id!: Uuid",
+                      w.container_ref,
+                      w.branch,
+                      w.agent_working_dir,
+                      w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
+                      w.created_at AS "created_at!: DateTime<Utc>",
+                      w.updated_at AS "updated_at!: DateTime<Utc>",
+                      w.archived AS "archived!: bool",
+                      w.pinned AS "pinned!: bool",
+                      w.name
+               FROM workspaces w
+               JOIN tasks t ON w.task_id = t.id
+               WHERE t.project_id = $1"#,
+            project_id
+        )
+        .fetch_all(pool)
+        .await
+    }
+
     /// Load workspace with full validation - ensures workspace belongs to task and task belongs to project
     pub async fn load_context(
         pool: &SqlitePool,

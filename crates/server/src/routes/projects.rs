@@ -19,7 +19,9 @@ use db::models::{
 };
 use deployment::Deployment;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
-use services::services::{file_search::SearchQuery, project::ProjectServiceError};
+use services::services::{
+    container::ContainerService, file_search::SearchQuery, project::ProjectServiceError,
+};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
@@ -148,6 +150,43 @@ pub async fn delete_project(
     Extension(project): Extension<Project>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<()>>, StatusCode> {
+    // 1. Fetch all workspaces associated with this project to perform cleanup
+    // We do this before deleting the project to ensure we have the necessary info in the DB
+    match db::models::workspace::Workspace::fetch_all_by_project_id(
+        &deployment.db().pool,
+        project.id,
+    )
+    .await
+    {
+        Ok(workspaces) => {
+            for workspace in workspaces {
+                tracing::info!(
+                    "Cleaning up workspace {} for deleted project {}",
+                    workspace.id,
+                    project.id
+                );
+                if let Err(e) = deployment.container().delete(&workspace).await {
+                    tracing::error!(
+                        "Failed to clean up workspace {} during project deletion: {}",
+                        workspace.id,
+                        e
+                    );
+                    // We continue with other workspaces and the project deletion
+                    // even if one workspace cleanup fails, to avoid leaving the project in a broken state
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                "Failed to fetch workspaces for project {} during deletion: {}",
+                project.id,
+                e
+            );
+            // Continue with project deletion anyway
+        }
+    }
+
+    // 2. Delete the project record from the database
     match deployment
         .project()
         .delete_project(&deployment.db().pool, project.id)
@@ -160,9 +199,9 @@ pub async fn delete_project(
                 deployment
                     .track_if_analytics_allowed(
                         "project_deleted",
-                        serde_json::json!({
+                        serde_json::json!( {
                             "project_id": project.id.to_string(),
-                        }),
+                        } ),
                     )
                     .await;
 
@@ -170,7 +209,7 @@ pub async fn delete_project(
             }
         }
         Err(e) => {
-            tracing::error!("Failed to delete project: {}", e);
+            tracing::error!("Failed to delete project {}: {}", project.id, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

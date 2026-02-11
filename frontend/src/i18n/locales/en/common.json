@@ -321,7 +321,7 @@
     },
     "classicUi": {
       "title": "Return to Classic UI",
-      "content": "Click the exit icon on the left side of the navbar to return to the classic kanban board. To disable the new UI entirely, update the \"Enable Workspaces Beta\" option under \"Beta Features\" in settings."
+      "content": "Use the project buttons in the left app bar to open the classic kanban board. To disable the new UI entirely, turn off \"Enable Workspaces Beta\" under \"Beta Features\" in settings."
     }
   },
   "logs": {

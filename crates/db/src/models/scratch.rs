@@ -99,6 +99,8 @@ pub struct StarbusTaskStateData {
     pub title: String,
     pub status: String,
     #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
     pub active_actor: Option<String>,
     #[serde(default)]
     pub active_role: Option<String>,
@@ -114,6 +116,10 @@ pub struct StarbusTaskStateData {
     pub gate: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub domain_roles: Vec<String>,
+    #[serde(default)]
+    pub include_recommended_deps: Option<bool>,
 }
 
 /// Star-State-Bus global state (stored in scratch)

@@ -23,8 +23,8 @@ import { Project } from 'shared/types';
 import { useEffect, useRef } from 'react';
 import { useOpenProjectInEditor } from '@/hooks/useOpenProjectInEditor';
 import { useNavigateWithSearch, useProjectRepos } from '@/hooks';
-import { projectsApi } from '@/lib/api';
 import { useTranslation } from 'react-i18next';
+import { useProjectMutations } from '@/hooks/useProjectMutations';
 
 type Props = {
   project: Project;
@@ -49,7 +49,11 @@ function ProjectCard({ project, isFocused, setError, onEdit }: Props) {
     }
   }, [isFocused]);
 
-  const handleDelete = async (id: string, name: string) => {
+  const { deleteProject } = useProjectMutations({
+    onDeleteError: () => setError('Failed to delete project'),
+  });
+
+  const handleDelete = (id: string, name: string) => {
     if (
       !confirm(
         `Are you sure you want to delete "${name}"? This action cannot be undone.`
@@ -57,12 +61,7 @@ function ProjectCard({ project, isFocused, setError, onEdit }: Props) {
     )
       return;
 
-    try {
-      await projectsApi.delete(id);
-    } catch (error) {
-      console.error('Failed to delete project:', error);
-      setError('Failed to delete project');
-    }
+    deleteProject.mutate(id);
   };
 
   const handleEdit = (project: Project) => {

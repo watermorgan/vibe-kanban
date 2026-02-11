@@ -7,6 +7,8 @@ interface UseProjectMutationsOptions {
   onCreateError?: (err: unknown) => void;
   onUpdateSuccess?: (project: Project) => void;
   onUpdateError?: (err: unknown) => void;
+  onDeleteSuccess?: (projectId: string) => void;
+  onDeleteError?: (err: unknown) => void;
 }
 
 export function useProjectMutations(options?: UseProjectMutationsOptions) {
@@ -53,8 +55,30 @@ export function useProjectMutations(options?: UseProjectMutationsOptions) {
     },
   });
 
+  const deleteProject = useMutation({
+    mutationKey: ['deleteProject'],
+    mutationFn: (projectId: string) => projectsApi.delete(projectId),
+    onSuccess: (_, projectId) => {
+      // Remove from single project cache
+      queryClient.removeQueries({ queryKey: ['project', projectId] });
+
+      // Remove from projects list cache
+      queryClient.setQueryData<Project[]>(['projects'], (old) => {
+        if (!old) return old;
+        return old.filter((p) => p.id !== projectId);
+      });
+
+      options?.onDeleteSuccess?.(projectId);
+    },
+    onError: (err) => {
+      console.error('Failed to delete project:', err);
+      options?.onDeleteError?.(err);
+    },
+  });
+
   return {
     createProject,
     updateProject,
+    deleteProject,
   };
 }

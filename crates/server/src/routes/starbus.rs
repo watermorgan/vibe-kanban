@@ -348,6 +348,25 @@ pub struct StarbusStateQuery {
     pub active_only: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct StarbusActiveTaskHygieneRequest {
+    pub project_id: Uuid,
+    #[serde(default)]
+    pub title_prefixes: Vec<String>,
+    #[serde(default)]
+    pub apply: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct StarbusActiveTaskHygieneResponse {
+    pub project_id: Uuid,
+    pub before_active_task_id: Option<Uuid>,
+    pub after_active_task_id: Option<Uuid>,
+    pub valid_before: bool,
+    pub changed: bool,
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS, Clone)]
 pub struct StarbusIntakeRequest {
     pub project_id: Uuid,
@@ -411,6 +430,13 @@ fn validate_intake(payload: &StarbusIntakeRequest) -> StarbusPreflightResponse {
     }
 }
 
+fn is_duplicate_task_title(tasks: &[Task], title: &str) -> bool {
+    let normalized = title.trim();
+    tasks
+        .iter()
+        .any(|task| task.title.trim().eq_ignore_ascii_case(normalized))
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct StarbusPreflightResponse {
     pub ok: bool,
@@ -456,7 +482,11 @@ pub struct StarbusProjectStatusSyncRequest {
     #[serde(default)]
     pub dry_run: Option<bool>,
     #[serde(default)]
+    pub bootstrap_missing_states: Option<bool>,
+    #[serde(default)]
     pub prune_nonmatching_scratch: Option<bool>,
+    #[serde(default)]
+    pub mirror_run_alias: Option<String>,
     #[serde(default)]
     pub set_active_to_latest: Option<bool>,
 }
@@ -625,10 +655,41 @@ pub struct StarbusDispatchResponse {
     pub note: Option<String>,
 }
 
-fn render_dispatch_prompt(title: &str, role: &str, action: &str) -> String {
-    format!(
-        "# Dispatch Prompt\n\n- Task: {title}\n- Role: {role}\n- Action: {action}\n\n## Read First\n1. docs/product/Architecture/vibe-starbus-architecture-prd.md\n2. docs/product/Architecture/v2-i1-key-rules-memory.md\n3. docs/product/Architecture/vibe-starbus-ai-handoff-pack.md\n4. docs/guides/prompts/<selected-v2-i1-prompt>.md\n\n## Output Contract\n- Keep outputs markdown-first.\n- Write phase artifacts under docs/starbus/runs/<task-id>/.\n- Write evidence index updates to artifacts/TASK-010-STARBUS-VIBE-INTEGRATION-MVP/README.md.\n"
-    )
+fn render_dispatch_prompt(
+    task_id: Uuid,
+    title: &str,
+    role: &str,
+    action: &str,
+    template_relpath: Option<&str>,
+) -> String {
+    let run_root = format!("docs/starbus/runs/{task_id}");
+    let mut body = String::new();
+    body.push_str("# Dispatch Prompt\n\n");
+    body.push_str(&format!("- Task ID: `{task_id}`\n"));
+    body.push_str(&format!("- Task: {title}\n"));
+    body.push_str(&format!("- Role: {role}\n"));
+    body.push_str(&format!("- Action: {action}\n\n"));
+    body.push_str("## Read First\n");
+    body.push_str("1. docs/product/Architecture/vibe-starbus-architecture-prd.md\n");
+    body.push_str("2. docs/product/Architecture/v2-i1-key-rules-memory.md\n");
+    body.push_str("3. docs/product/Architecture/vibe-starbus-ai-handoff-pack.md\n");
+    if let Some(rel) = template_relpath {
+        body.push_str(&format!("4. {rel}\n"));
+    } else {
+        body.push_str("4. docs/starbus/prompts/<selected-v2-i1-prompt>.md\n");
+    }
+    body.push_str("\n## Mandatory Output Files\n");
+    body.push_str(&format!("- `{run_root}/03-dev.md`\n"));
+    body.push_str(&format!("- `{run_root}/04-test.md`\n"));
+    body.push_str(&format!("- `{run_root}/06-audit.md`\n"));
+    body.push_str(&format!("- `{run_root}/handoff.md`\n"));
+    body.push_str("\n## Output Contract\n");
+    body.push_str("- Keep outputs markdown-first.\n");
+    body.push_str(&format!("- Write all phase artifacts under `{run_root}/`.\n"));
+    body.push_str(
+        "- Keep evidence paths task-specific and append index updates in the task artifact README.\n",
+    );
+    body
 }
 
 fn infer_prompt_template_relpath(title: &str, role: &str) -> &'static str {
@@ -639,13 +700,13 @@ fn infer_prompt_template_relpath(title: &str, role: &str) -> &'static str {
         || t.contains("gate definition")
         || r.contains("product-manager")
     {
-        "docs/guides/prompts/v2-i1-req-prompt.md"
+        "docs/starbus/prompts/v2-i1-req-prompt.md"
     } else if t.contains("test") || t.contains("evidence") || r.contains("qa-security") {
-        "docs/guides/prompts/v2-i1-test-prompt.md"
+        "docs/starbus/prompts/v2-i1-test-prompt.md"
     } else if t.contains("accept") || t.contains("audit") || t.contains("release") {
-        "docs/guides/prompts/v2-i1-accept-prompt.md"
+        "docs/starbus/prompts/v2-i1-accept-prompt.md"
     } else {
-        "docs/guides/prompts/v2-i1-dev-prompt.md"
+        "docs/starbus/prompts/v2-i1-dev-prompt.md"
     }
 }
 
@@ -816,11 +877,99 @@ pub async fn get_status_mapping(
     })))
 }
 
+pub async fn active_task_hygiene(
+    State(deployment): State<DeploymentImpl>,
+    Json(req): Json<StarbusActiveTaskHygieneRequest>,
+) -> Result<ResponseJson<ApiResponse<StarbusActiveTaskHygieneResponse>>, ApiError> {
+    let apply = req.apply.unwrap_or(false);
+    let global = get_global_state(&deployment).await?;
+    let before = global.active_task_id;
+
+    let prefixes: Vec<String> = req
+        .title_prefixes
+        .iter()
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    let mut project_tasks = Task::find_by_project_id(&deployment.db().pool, req.project_id)
+        .await?
+        .into_iter()
+        .filter(|task| {
+            if prefixes.is_empty() {
+                true
+            } else {
+                let t = task.title.to_lowercase();
+                prefixes.iter().any(|p| t.starts_with(p))
+            }
+        })
+        .collect::<Vec<_>>();
+    project_tasks.sort_by_key(|task| task.updated_at);
+
+    let state_ids: HashSet<Uuid> = list_starbus_tasks(&deployment)
+        .await?
+        .into_iter()
+        .map(|state| state.task_id)
+        .collect();
+
+    let valid_before = before
+        .filter(|id| {
+            project_tasks.iter().any(|task| task.id == *id) && state_ids.contains(id)
+        })
+        .is_some();
+
+    let after = if valid_before {
+        before
+    } else {
+        project_tasks
+            .iter()
+            .rev()
+            .find(|task| state_ids.contains(&task.id))
+            .map(|task| task.id)
+    };
+
+    if apply && before != after {
+        upsert_global_state(
+            &deployment,
+            StarbusGlobalStateData {
+                active_task_id: after,
+            },
+        )
+        .await?;
+    }
+
+    let reason = if valid_before {
+        "active task is already valid".to_string()
+    } else if after.is_some() {
+        "active task switched to latest valid task".to_string()
+    } else {
+        "no valid active task candidate found".to_string()
+    };
+
+    Ok(ResponseJson(ApiResponse::success(
+        StarbusActiveTaskHygieneResponse {
+            project_id: req.project_id,
+            before_active_task_id: before,
+            after_active_task_id: after,
+            valid_before,
+            changed: before != after,
+            reason,
+        },
+    )))
+}
+
 pub async fn sync_project_statuses(
     State(deployment): State<DeploymentImpl>,
     Json(req): Json<StarbusProjectStatusSyncRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusProjectStatusSyncResponse>>, ApiError> {
     let dry_run = req.dry_run.unwrap_or(false);
+    let bootstrap_missing_states = req.bootstrap_missing_states.unwrap_or(false);
+    let mirror_run_alias = req
+        .mirror_run_alias
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     let project_tasks = Task::find_by_project_id(&deployment.db().pool, req.project_id).await?;
     let project_task_map: HashMap<Uuid, Task> = project_tasks.into_iter().map(|t| (t.id, t)).collect();
     if project_task_map.is_empty() {
@@ -844,6 +993,108 @@ pub async fn sync_project_statuses(
             let title = s.title.to_lowercase();
             normalized_prefixes.iter().any(|p| title.starts_with(p))
         });
+    }
+
+    let mut filtered_project_tasks: Vec<Task> = project_task_map
+        .values()
+        .filter(|task| {
+            if normalized_prefixes.is_empty() {
+                return true;
+            }
+            let title = task.title.to_lowercase();
+            normalized_prefixes.iter().any(|p| title.starts_with(p))
+        })
+        .cloned()
+        .collect();
+
+    if bootstrap_missing_states {
+        let mut existing_ids: HashSet<Uuid> = state_tasks.iter().map(|s| s.task_id).collect();
+        for task in &filtered_project_tasks {
+            if existing_ids.contains(&task.id) {
+                continue;
+            }
+            let (role, inferred_status, gate, action) = infer_dispatch_from_title(&task.title);
+            let mut task_state = StarbusTaskStateData {
+                task_id: task.id,
+                title: task.title.clone(),
+                status: starbus_status_from_task_status(&task.status),
+                priority: Some("P1".to_string()),
+                active_actor: Some("ACTOR_CLAUDE".to_string()),
+                active_role: Some(role.clone()),
+                next_action: default_next_action_for_status(&inferred_status),
+                decision_requests: Vec::new(),
+                history: vec![StarbusHistoryEntry {
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    from_status: None,
+                    to_status: Some(starbus_status_from_task_status(&task.status)),
+                    actor: Some("ORCHESTRATOR".to_string()),
+                    note: Some(
+                        "Bootstrapped from vibe-kanban task status sync".to_string(),
+                    ),
+                }],
+                step_count: 0,
+                gate: Some(gate),
+                tags: Vec::new(),
+                domain_roles: role_domain_defaults(&role),
+                include_recommended_deps: Some(true),
+            };
+            if task_state.next_action.is_none() {
+                task_state.next_action = Some(StarbusNextAction {
+                    actor: "ACTOR_CLAUDE".to_string(),
+                    role: role.clone(),
+                    action,
+                    inputs: vec![
+                        format!("docs/starbus/runs/{}/task.md", task.id),
+                        format!("docs/starbus/runs/{}/context.md", task.id),
+                    ],
+                    outputs: vec![
+                        format!("docs/starbus/runs/{}/03-dev.md", task.id),
+                        format!("docs/starbus/runs/{}/04-test.md", task.id),
+                        format!("docs/starbus/runs/{}/06-audit.md", task.id),
+                        format!("docs/starbus/runs/{}/handoff.md", task.id),
+                    ],
+                });
+            }
+
+            if !dry_run {
+                let intake_for_skeleton = StarbusIntakeRequest {
+                    project_id: req.project_id,
+                    title: task.title.clone(),
+                    description: task.description.clone(),
+                    acceptance: None,
+                    priority: Some("P1".to_string()),
+                    domain_roles: role_domain_defaults(&role),
+                    include_recommended_deps: Some(true),
+                    tags: vec!["bootstrap".to_string()],
+                    set_active: false,
+                    default_actor: Some("ACTOR_CLAUDE".to_string()),
+                    default_role: Some(role.clone()),
+                };
+                let task_dir = write_task_skeleton_files(task.id, &intake_for_skeleton, &task_state.status)?;
+                if let Some(alias) = mirror_run_alias.as_ref() {
+                    let workspace_root = discover_workspace_root();
+                    let alias_dir = starbus_runs_root(&workspace_root).join(alias);
+                    if alias_dir.exists() {
+                        for name in ["03-dev.md", "04-test.md", "06-audit.md", "handoff.md"] {
+                            let dst = task_dir.join(name);
+                            if dst.exists() {
+                                continue;
+                            }
+                            let src = alias_dir.join(name);
+                            if src.exists() {
+                                let _ = fs::copy(&src, &dst);
+                            }
+                        }
+                    }
+                }
+                let create = CreateScratch {
+                    payload: ScratchPayload::StarbusTaskState(task_state.clone()),
+                };
+                let _ = Scratch::create(&deployment.db().pool, task.id, &create).await?;
+            }
+            existing_ids.insert(task.id);
+            state_tasks.push(task_state);
+        }
     }
 
     let matched_ids: HashSet<Uuid> = state_tasks.iter().map(|s| s.task_id).collect();
@@ -914,12 +1165,18 @@ pub async fn sync_project_statuses(
 }
 
 pub async fn intake_preflight(
-    State(_deployment): State<DeploymentImpl>,
+    State(deployment): State<DeploymentImpl>,
     Json(payload): Json<StarbusIntakeRequest>,
 ) -> Result<ResponseJson<ApiResponse<StarbusPreflightResponse>>, ApiError> {
-    Ok(ResponseJson(ApiResponse::success(validate_intake(
-        &payload,
-    ))))
+    let mut result = validate_intake(&payload);
+    let tasks = Task::find_by_project_id(&deployment.db().pool, payload.project_id).await?;
+    if is_duplicate_task_title(&tasks, &payload.title) {
+        result.ok = false;
+        result
+            .errors
+            .push("duplicate task title in project".to_string());
+    }
+    Ok(ResponseJson(ApiResponse::success(result)))
 }
 
 pub async fn intake_create(
@@ -932,6 +1189,13 @@ pub async fn intake_create(
             "Preflight failed: {}",
             preflight.errors.join("; ")
         )));
+    }
+
+    let tasks = Task::find_by_project_id(&deployment.db().pool, payload.project_id).await?;
+    if is_duplicate_task_title(&tasks, &payload.title) {
+        return Err(ApiError::BadRequest(
+            "duplicate task title in project".to_string(),
+        ));
     }
 
     let task_id = Uuid::new_v4();
@@ -957,7 +1221,7 @@ pub async fn intake_create(
             actor: "ACTOR_HUMAN".to_string(),
             role: "role-product-manager".to_string(),
             action: "Resolve domain_roles overflow decision".to_string(),
-            inputs: vec!["docs/starbus/runs/<task-id>/task.md".to_string()],
+            inputs: vec![format!("docs/starbus/runs/{task_id}/task.md")],
             outputs: vec![],
         })
     } else {
@@ -1389,6 +1653,50 @@ pub async fn run_role_task(
     };
     let _ = Task::create(&deployment.db().pool, &create_task, task_id).await?;
 
+    let task_dir = match write_task_skeleton_files(task_id, &preflight_payload, &initial_status) {
+        Ok(dir) => dir,
+        Err(err) => {
+            let _ = Task::delete(&deployment.db().pool, task_id).await;
+            return Err(err);
+        }
+    };
+    let workspace_root = discover_workspace_root();
+    let template_rel = existing_prompt_relpath(&workspace_root, &payload.title, &payload.role);
+    let dispatch_prompt_path = task_dir.join("dispatch-prompt.md");
+    if let Err(err) = fs::write(
+        &dispatch_prompt_path,
+        render_dispatch_prompt(
+            task_id,
+            &payload.title,
+            &payload.role,
+            payload
+                .action
+                .as_deref()
+                .unwrap_or("Auto started from starbus/run-role-task"),
+            template_rel.as_deref(),
+        ),
+    ) {
+        let _ = fs::remove_dir_all(&task_dir);
+        let _ = Task::delete(&deployment.db().pool, task_id).await;
+        return Err(ApiError::BadRequest(format!(
+            "Failed to write dispatch prompt: {err}"
+        )));
+    }
+    let dispatch_prompt_rel = dispatch_prompt_path
+        .strip_prefix(&workspace_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| dispatch_prompt_path.to_string_lossy().to_string());
+    let task_run_root = format!("docs/starbus/runs/{task_id}");
+
+    let mut inputs = vec![
+        dispatch_prompt_rel,
+        format!("{task_run_root}/task.md"),
+        format!("{task_run_root}/context.md"),
+    ];
+    if let Some(rel) = template_rel {
+        inputs.push(rel);
+    }
+
     let next_action = StarbusNextAction {
         actor: actor.clone(),
         role: payload.role.clone(),
@@ -1396,14 +1704,12 @@ pub async fn run_role_task(
             .action
             .clone()
             .unwrap_or_else(|| "Auto started from starbus/run-role-task".to_string()),
-        inputs: vec![
-            format!("docs/starbus/runs/{task_id}/task.md"),
-            format!("docs/starbus/runs/{task_id}/context.md"),
-        ],
+        inputs,
         outputs: vec![
-            format!("docs/starbus/runs/{task_id}/03-dev.md"),
-            format!("docs/starbus/runs/{task_id}/04-test.md"),
-            format!("docs/starbus/runs/{task_id}/06-audit.md"),
+            format!("{task_run_root}/03-dev.md"),
+            format!("{task_run_root}/04-test.md"),
+            format!("{task_run_root}/06-audit.md"),
+            format!("{task_run_root}/handoff.md"),
         ],
     };
 
@@ -1428,14 +1734,6 @@ pub async fn run_role_task(
         tags: payload.tags.clone(),
         domain_roles: payload.domain_roles.clone(),
         include_recommended_deps: payload.include_recommended_deps,
-    };
-
-    let task_dir = match write_task_skeleton_files(task_id, &preflight_payload, &initial_status) {
-        Ok(dir) => dir,
-        Err(err) => {
-            let _ = Task::delete(&deployment.db().pool, task_id).await;
-            return Err(err);
-        }
     };
 
     if let Err(err) = Scratch::create(
@@ -1739,34 +2037,43 @@ pub async fn dispatch_task(
         let _ = write_task_skeleton_files(task.id, &intake_for_skeleton, &planned_status)?;
     }
 
-    let prompt_rel = if let Some(rel) = existing_prompt_relpath(&workspace_root, &task.title, &role) {
-        rel
-    } else {
-        let prompt_abs = task_dir.join("dispatch-prompt.md");
-        fs::write(
-            &prompt_abs,
-            render_dispatch_prompt(&task.title, &role, &action),
-        )
-        .map_err(|e| ApiError::BadRequest(format!("Failed to write dispatch prompt: {e}")))?;
-        prompt_abs
-            .strip_prefix(&workspace_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| prompt_abs.to_string_lossy().to_string())
-    };
+    let template_rel = existing_prompt_relpath(&workspace_root, &task.title, &role);
+    let prompt_abs = task_dir.join("dispatch-prompt.md");
+    fs::write(
+        &prompt_abs,
+        render_dispatch_prompt(
+            task.id,
+            &task.title,
+            &role,
+            &action,
+            template_rel.as_deref(),
+        ),
+    )
+    .map_err(|e| ApiError::BadRequest(format!("Failed to write dispatch prompt: {e}")))?;
+    let prompt_rel = prompt_abs
+        .strip_prefix(&workspace_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| prompt_abs.to_string_lossy().to_string());
+
+    let mut inputs = vec![
+        prompt_rel.clone(),
+        format!("docs/starbus/runs/{}/task.md", task.id),
+        format!("docs/starbus/runs/{}/context.md", task.id),
+    ];
+    if let Some(rel) = template_rel {
+        inputs.push(rel);
+    }
 
     let next_action = StarbusNextAction {
         actor: actor.clone(),
         role: role.clone(),
         action: action.clone(),
-        inputs: vec![
-            prompt_rel.clone(),
-            format!("docs/starbus/runs/{}/task.md", task.id),
-            format!("docs/starbus/runs/{}/context.md", task.id),
-        ],
+        inputs,
         outputs: vec![
             format!("docs/starbus/runs/{}/03-dev.md", task.id),
             format!("docs/starbus/runs/{}/04-test.md", task.id),
             format!("docs/starbus/runs/{}/06-audit.md", task.id),
+            format!("docs/starbus/runs/{}/handoff.md", task.id),
         ],
     };
 
@@ -2051,4 +2358,5 @@ pub fn router(_deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/starbus/state/next_action", post(update_next_action))
         .route("/starbus/state/transition", post(transition_state))
         .route("/starbus/state/decision/resolve", post(resolve_decision))
+        .route("/starbus/state/active-task/hygiene", post(active_task_hygiene))
 }
