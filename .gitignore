@@ -86,3 +86,6 @@ vibe-kanban-cloud/
 
 .jj
 .sisyphus/
+
+# local temp workspace
+verify-project/
